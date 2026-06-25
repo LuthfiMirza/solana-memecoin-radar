@@ -3,9 +3,9 @@ const Groq = require('groq-sdk');
 
 function buildPrompt(context) {
   return [
-    'Analisis token Solana berikut secara singkat dan berikan kesimpulan praktis dalam Bahasa Indonesia.',
-    'Fokus pada risiko rug pull, kualitas likuiditas, tekanan beli/jual, dan alasan utama skor.',
-    'Jawab dalam 4-6 bullet ringkas tanpa markdown tabel.',
+    'Berikan analisis singkat token memecoin dalam 2-3 kalimat bahasa Indonesia.',
+    'Fokus pada: apakah layak dibeli, risiko utama, dan potensi.',
+    'JANGAN gunakan bullet points atau tanda bintang. Tulis dalam paragraf singkat.',
     '',
     `Token: ${context.symbol || 'UNKNOWN'} (${context.tokenAddress})`,
     `Harga: ${context.priceUsd ?? 'n/a'}`,
@@ -28,7 +28,7 @@ async function groqSummary(context) {
   const response = await client.chat.completions.create({
     model: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
     messages: [
-      { role: 'system', content: 'Kamu adalah analis memecoin Solana yang ringkas, tajam, dan objektif.' },
+      { role: 'system', content: 'Kamu adalah analis memecoin Solana yang ringkas, tajam, dan objektif. Jawab hanya dalam paragraf pendek tanpa bullet point dan tanpa tanda bintang.' },
       { role: 'user', content: buildPrompt(context) }
     ],
     temperature: 0.3,

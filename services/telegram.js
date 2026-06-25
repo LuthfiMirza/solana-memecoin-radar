@@ -27,6 +27,14 @@ function pct(value) {
   return `${number >= 0 ? '+' : ''}${number.toFixed(2)}%`;
 }
 
+function formatUSD(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 'N/A';
+  if (number >= 1000) return `$${Math.round(number).toLocaleString('en-US')}`;
+  if (number <= 0) return '$0';
+  return `$${Number.parseFloat(number).toPrecision(4)}`;
+}
+
 function signalEmoji(signal) {
   if (signal === 'BUY') return '🚀';
   if (signal === 'WATCH') return '👀';
@@ -41,7 +49,21 @@ function shortAddress(address) {
 function scoreBar(score) {
   const normalized = Math.max(0, Math.min(100, Number(score) || 0));
   const filled = Math.round(normalized / 10);
-  return `${'█'.repeat(filled)}${'░'.repeat(10 - filled)} ${normalized}/100`;
+  const bar = `${'█'.repeat(filled)}${'░'.repeat(10 - filled)}`;
+  return `${bar} ${normalized}/100`;
+}
+
+function cleanAI(summary) {
+  if (!summary) return null;
+  const clean = summary
+    .replace(/\*/g, '')
+    .replace(/^\s*[-•]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/\n+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!clean) return null;
+  return clean.length > 280 ? `${clean.substring(0, 277)}...` : clean;
 }
 
 function rugEmoji(status) {
@@ -107,34 +129,49 @@ async function sendMessage(message) {
 }
 
 function formatSignalAlert(token) {
-  const dexUrl = token.url || `https://dexscreener.com/solana/${token.tokenAddress}`;
+  const tokenAddress = token.tokenAddress || token.token_address;
+  const pairAddress = token.pairAddress || token.pair_address || tokenAddress;
+  const dexUrl = token.url || `https://dexscreener.com/solana/${pairAddress}`;
   const rugUrl = `https://rugcheck.xyz/tokens/${token.tokenAddress}`;
-  const breakdown = token.breakdown || {};
+  const aiSummary = cleanAI(token.aiSummary || token.ai_summary);
+  const topHolder = token.topHolderPercent ?? token.top_holder_percent;
+  const topHolderDisplay = topHolder !== null && topHolder !== undefined && Number.isFinite(Number(topHolder))
+    ? `${Number(topHolder).toFixed(2)}%`
+    : 'N/A';
+  const headerEmoji = token.signal === 'BUY' ? '🚀' : token.signal === 'WATCH' ? '👀' : '❌';
+  const lines = [
+    `${headerEmoji} ${token.signal} SIGNAL — $${token.symbol || 'UNKNOWN'}`,
+    '━━━━━━━━━━━━━━━━━━━━━━━━',
+    `💎 Name    : ${token.name || 'Unknown Token'}`,
+    `📍 CA      : ${shortAddress(tokenAddress)}`,
+    `💰 Price   : ${formatUSD(token.priceUsd ?? token.price_usd)}`,
+    '',
+    `📊 Score   : ${scoreBar(token.score)}`,
+    '',
+    `🏦 Liquidity : ${formatUSD(token.liquidityUsd ?? token.liquidity_usd)}`,
+    `📈 Volume 24h: ${formatUSD(token.volume24hUsd ?? token.volume_24h_usd)}`,
+    `💰 Market Cap: ${formatUSD(token.marketCapUsd ?? token.market_cap_usd)}`,
+    `👥 Top Holder: ${topHolderDisplay}`,
+    `⚖️ Buy/Sell  : ${Number(token.buySellRatio ?? token.buy_sell_ratio ?? 0).toFixed(2)}x`,
+    `🧠 Smart     : ${token.smartWalletCount ?? token.smart_wallet_count ?? 0} wallets`,
+    `🐋 Whale     : ${token.whaleEntryCount ?? token.whale_entry_count ?? 0} entries`,
+    `🛡️ RugCheck  : ${rugEmoji(token.rugStatus ?? token.rug_status)}`
+  ];
 
-  return [
-    `${signalEmoji(token.signal)} ${token.signal} SIGNAL — $${token.symbol || 'UNKNOWN'}`,
-    `${token.name || 'Unknown Token'} | CA: ${shortAddress(token.tokenAddress)}`,
+  if (aiSummary) {
+    lines.push('', '🤖 AI Insight:', aiSummary);
+  }
+
+  lines.push(
     '',
-    `📊 Score: ${scoreBar(token.score)}`,
-    `🏦 Liquidity: ${money(token.liquidityUsd)} (${breakdown.liquidity ?? 0} pts)`,
-    `📈 Volume 24h: ${money(token.volume24hUsd)} (${breakdown.volume ?? 0} pts)`,
-    `💰 Market Cap: ${money(token.marketCapUsd)} (${breakdown.marketCap ?? 0} pts)`,
-    `👥 Top Holder: ${token.topHolderPercent ?? 'n/a'}% (${breakdown.topHolder ?? 0} pts)`,
-    `⚖️ Buy/Sell: ${Number(token.buySellRatio || 0).toFixed(2)}x (${breakdown.buySellRatio ?? 0} pts)`,
-    `🧠 Smart Wallets: ${token.smartWalletCount ?? 0} (${breakdown.smartWallet ?? 0} pts)`,
-    `🐋 Whale Entry: ${token.whaleEntryCount ?? 0} (${breakdown.whaleEntry ?? 0} pts)`,
-    `🛡️ RugCheck: ${rugEmoji(token.rugStatus)} (${breakdown.rugcheck ?? 0} pts)`,
-    '',
-    `🤖 AI: ${token.aiSummary || 'Ringkasan AI belum tersedia.'}`,
-    '',
-    `🔗 DexScreener: ${dexUrl}`,
-    `🔗 RugCheck: ${rugUrl}`,
-    '',
+    `🔗 Chart  : ${dexUrl}`,
+    `🔗 Risk   : ${rugUrl}`,
     `⏰ ${wibTimestamp()}`,
-    `📍 CA: ${shortAddress(token.tokenAddress)}`,
     '',
-    `Konfirmasi entry: /buy ${token.tokenAddress} <entry_price> <tp_percent>`
-  ].join('\n');
+    `💡 /buy ${tokenAddress} 200`
+  );
+
+  return lines.join('\n');
 }
 
 function formatSellAlert(alert) {
