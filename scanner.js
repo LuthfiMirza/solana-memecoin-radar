@@ -10,6 +10,9 @@ const { generateSummary } = require('./services/aiService');
 const { detectWhaleEntries } = require('./services/whale');
 const { monitorHoldings } = require('./services/portfolio');
 const { initBot, sendSignalAlert, sendDailySummary } = require('./services/telegram');
+const { createEvaluationForSignal } = require('./services/signalEvaluationRepository');
+const { evaluatePendingSignals } = require('./services/signalEvaluator');
+const { signalEvaluationConfig } = require('./config/strategy');
 
 async function getSmartWalletStats() {
   const rows = await query('SELECT COUNT(*) AS total FROM smart_wallets WHERE is_active = 1');
@@ -50,10 +53,50 @@ async function saveToken(token) {
 }
 
 async function saveSignal(tokenId, token, message) {
-  await query(
-    'INSERT INTO signals (token_id, token_address, \`signal\`, score, message) VALUES (?, ?, ?, ?, ?)',
-    [tokenId, token.tokenAddress, token.signal, token.score, message]
-  );
+  try {
+    const result = await query(
+      'INSERT INTO signals (token_id, token_address, \`signal\`, score, price_at_signal, message) VALUES (?, ?, ?, ?, ?, ?)',
+      [tokenId, token.tokenAddress, token.signal, token.score, token.priceUsd ?? null, message]
+    );
+    return getSavedSignal(result.insertId);
+  } catch (error) {
+    if (error.code !== 'ER_BAD_FIELD_ERROR') throw error;
+    const result = await query(
+      'INSERT INTO signals (token_id, token_address, \`signal\`, score, message) VALUES (?, ?, ?, ?, ?)',
+      [tokenId, token.tokenAddress, token.signal, token.score, message]
+    );
+    return getSavedSignal(result.insertId);
+  }
+}
+
+async function getSavedSignal(signalId) {
+  const rows = await query('SELECT id, sent_at FROM signals WHERE id = ? LIMIT 1', [signalId]);
+  return { id: signalId, sentAt: rows[0]?.sent_at || new Date() };
+}
+
+async function createPendingSignalEvaluation(savedSignal, tokenId, token) {
+  if (!savedSignal?.id) return;
+  try {
+    await createEvaluationForSignal({
+      signalId: savedSignal.id,
+      tokenId,
+      tokenAddress: token.tokenAddress,
+      signal: token.signal,
+      score: token.score,
+      priceAtSignal: token.priceUsd ?? null,
+      rugStatus: token.rugStatus,
+      liquidityUsd: token.liquidityUsd,
+      topHolderPercent: token.topHolderPercent,
+      buySellRatio: token.buySellRatio,
+      sentAt: savedSignal.sentAt
+    });
+  } catch (error) {
+    if (error.code === 'ER_NO_SUCH_TABLE' || error.code === 'ER_BAD_FIELD_ERROR') {
+      console.warn('Signal evaluation skipped. Apply database/migrations/001_signal_performance.sql to enable it.');
+      return;
+    }
+    console.warn(`Signal evaluation creation failed for ${token.tokenAddress}: ${error.message}`);
+  }
 }
 
 async function analyzeToken(tokenAddress) {
@@ -170,7 +213,8 @@ async function scanNewTokens() {
         const alreadySent = await wasSignalRecentlySent(token.tokenAddress, token.signal);
         if (!alreadySent) {
           await sendSignalAlert(token);
-          await saveSignal(saved.id, token, token.aiSummary);
+          const savedSignal = await saveSignal(saved.id, token, token.aiSummary);
+          await createPendingSignalEvaluation(savedSignal, saved.id, token);
         }
       }
 
@@ -194,12 +238,37 @@ async function main() {
 
   cron.schedule('*/5 * * * *', () => scanNewTokens().catch((error) => console.error(`Scan error: ${error.message}`)));
   cron.schedule('*/2 * * * *', () => monitorPortfolio().catch((error) => console.error(`Portfolio error: ${error.message}`)));
+  if (signalEvaluationConfig.enabled) scheduleSignalEvaluator();
   cron.schedule('0 1 * * *', () => sendDailySummary().catch((error) => console.error(`Daily summary error: ${error.message}`)));
 
   if (process.env.RUN_ON_START !== 'false') {
     await scanNewTokens().catch((error) => console.error(`Initial scan error: ${error.message}`));
     await monitorPortfolio().catch((error) => console.error(`Initial portfolio error: ${error.message}`));
   }
+}
+
+let signalEvaluatorRunning = false;
+function scheduleSignalEvaluator() {
+  cron.schedule('*/2 * * * *', async () => {
+    if (signalEvaluatorRunning) {
+      console.log('Signal evaluator skipped: previous run still active.');
+      return;
+    }
+    signalEvaluatorRunning = true;
+    try {
+      console.log(`[${new Date().toISOString()}] Signal evaluator start...`);
+      const result = await evaluatePendingSignals();
+      console.log(`Signal evaluator done: evaluations=${result.evaluations || 0}, tokens=${result.tokens || 0}, success=${result.success || 0}, errors=${result.errors || 0}`);
+    } catch (error) {
+      if (error.code === 'ER_NO_SUCH_TABLE' || error.code === 'ER_BAD_FIELD_ERROR') {
+        console.warn('Signal evaluator disabled until migration is applied.');
+      } else {
+        console.error(`Signal evaluator error: ${error.message}`);
+      }
+    } finally {
+      signalEvaluatorRunning = false;
+    }
+  });
 }
 
 process.on('SIGINT', async () => {

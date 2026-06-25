@@ -9,7 +9,9 @@
     "db:import": "/Applications/XAMPP/xamppfiles/bin/mysql -h 127.0.0.1 -u root < database/schema.sql",
     "api": "node api/server.js",
     "dashboard:dev": "npm --prefix dashboard run dev",
-    "dashboard:build": "npm --prefix dashboard run build"
+    "dashboard:build": "npm --prefix dashboard run build",
+    "test": "node --test",
+    "signal-evaluator:once": "node scripts/runSignalEvaluatorOnce.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

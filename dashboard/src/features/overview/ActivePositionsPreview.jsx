@@ -1,0 +1,6 @@
+import React from 'react';
+import { EmptyState } from '../../components/EmptyState';
+import { formatPercent, formatUsd, formatWib, shortAddress } from '../../lib/format';
+export function ActivePositionsPreview({ rows = [] }) {
+  return <section className="rounded-[2rem] bg-white p-5 shadow-card"><h2 className="mb-4 text-lg font-extrabold">Active Tracked Positions</h2>{rows.length === 0 ? <EmptyState title="No active tracked positions" message="Positions confirmed via Telegram /buy will appear here." /> : <div className="space-y-3">{rows.map((row) => <div key={row.id} className="rounded-2xl bg-slate-50 p-4"><div className="flex flex-wrap justify-between gap-2"><div><div className="font-extrabold">${row.symbol || shortAddress(row.tokenAddress)}</div><div className="text-xs text-slate-500">{shortAddress(row.tokenAddress)}</div></div><div className={`text-sm font-extrabold ${Number(row.pnlPercent || 0) >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{formatPercent(row.pnlPercent)}</div></div><div className="mt-3 grid gap-2 text-xs text-slate-500 sm:grid-cols-2"><span>Entry {formatUsd(row.entryPrice)}</span><span>Current {formatUsd(row.currentPrice)}</span><span>TP {formatUsd(row.takeProfitPrice)}</span><span>SL {formatUsd(row.stopLossPrice)}</span><span>Opened {formatWib(row.openedAt)}</span></div></div>)}</div>}</section>;
+}
