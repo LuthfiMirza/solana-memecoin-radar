@@ -83,11 +83,12 @@ function dexScreenerUrl(tokenAddress) {
 }
 
 function formatBuyConfirmation(result) {
+  const priceSource = result.priceSource || 'auto-fetch';
   return [
     '✅ Posisi dibuka!',
     '━━━━━━━━━━━━━━━━━━━━',
     `📍 Token  : $${result.symbol || 'UNKNOWN'} (${shortAddress(result.tokenAddress)})`,
-    `💰 Entry  : ${money(result.entryPrice)} (auto-fetch)`,
+    `💰 Entry  : ${money(result.entryPrice)} (${priceSource})`,
     `🎯 Target : ${money(result.takeProfitPrice)} (${pct(result.takeProfitPercent)})`,
     `🛑 Stop   : ${money(result.stopLossPrice)} (-20%)`,
     `⏰ Waktu  : ${wibTimestamp()}`,
@@ -216,6 +217,23 @@ function portfolioButtons(tokenAddress) {
   };
 }
 
+async function registerBotCommands() {
+  if (!bot) return;
+  try {
+    await bot.setMyCommands([
+      { command: 'start', description: '👋 Mulai & panduan singkat' },
+      { command: 'help', description: '📖 Semua command dijelaskan' },
+      { command: 'portfolio', description: '📊 Lihat posisi aktif & P&L' },
+      { command: 'buy', description: '🟢 Buka posisi baru' },
+      { command: 'sell', description: '🔴 Tutup posisi' },
+      { command: 'status', description: '🔧 Status bot & sistem' },
+      { command: 'config', description: '⚙️ Lihat konfigurasi aktif' }
+    ]);
+  } catch (error) {
+    console.warn(`Gagal register Telegram command menu: ${error.message}`);
+  }
+}
+
 async function sendPortfolioCards(chatId) {
   const holdings = await portfolioSummary();
   if (holdings.length === 0) {
@@ -236,36 +254,32 @@ async function sendPortfolioCards(chatId) {
 
 function formatHelpMessage() {
   return [
-    '🤖 *Memecoin Scanner Bot Commands*',
+    '📖 *DAFTAR COMMAND*',
+    '━━━━━━━━━━━━━━━━━━━━',
+    '',
+    '🟢 */buy* <address> <tp%>',
+    '   Contoh: /buy FeMb...pump 200',
+    '   Auto-fetch harga dari DexScreener',
+    '',
+    '🟢 */buy* <address> <tp%> <harga>',
+    '   Contoh: /buy FeMb...pump 200 0.00471',
+    '   Manual input harga beli dari OKX',
     '',
     '📊 */portfolio*',
-    'Lihat semua posisi aktif + P&L',
+    '   Lihat semua posisi aktif + P&L',
     '',
-    '🚀 */buy* <contract> <tp%>',
-    'Masuk posisi baru dengan entry price auto-fetch dari DexScreener',
-    'Contoh: /buy FeMbDoX...pump 200',
+    '🔴 */sell* <address>',
+    '   Tutup posisi & catat hasil',
     '',
-    '❌ */sell* <contract>',
-    'Tutup posisi manual',
-    'Contoh: /sell EPjFWdd5...',
+    '🔧 */status*',
+    '   Cek bot hidup, DB, API connections',
+    '   Lihat setting TP/SL/ATH drop aktif',
     '',
-    '⚙️ *Settings*',
-    '- TP default: 50%',
-    '- SL default: -20%',
-    '- ATH drop alert: -30%',
-    '- Max holding: 5 token',
-    '- Scan interval: 5 menit',
+    '⚙️ */config*',
+    '   Lihat konfigurasi scanner dan data source',
     '',
-    '📈 *Signal Levels*',
-    '🚀 BUY: Score ≥ 70',
-    '👀 WATCH: Score 60-69',
-    '❌ AVOID: Score < 60',
-    '',
-    '💡 Tips:',
-    '- Monitor /portfolio setiap hari',
-    '- Set TP realistis (20-100%)',
-    '- SL automatic di -20%',
-    '- Alerts via Telegram real-time'
+    '👋 */start*',
+    '   Mulai bot dan lihat panduan singkat'
   ].join('\n');
 }
 
@@ -383,6 +397,7 @@ function initBot(polling = true) {
     polling: false,
     request: { timeout: 30000 }
   });
+  registerBotCommands();
 
   if (polling) {
     bot.startPolling({
@@ -406,23 +421,35 @@ function initBot(polling = true) {
     const parts = message.text.trim().split(/\s+/);
     const tokenAddress = parts[1];
     const takeProfitPercent = Number(parts[2]);
+    const manualPrice = parts[3] ? Number(parts[3]) : null;
 
     if (!tokenAddress || !Number.isFinite(takeProfitPercent) || takeProfitPercent <= 0) {
-      await bot.sendMessage(message.chat.id, '❌ Format salah.\nGunakan: /buy <token_address> <tp_persen>\nContoh: /buy FeMbDoX...pump 200');
+      await bot.sendMessage(message.chat.id, '❌ Format salah.\nGunakan: /buy <token_address> <tp_persen>\nContoh: /buy FeMbDoX...pump 200\nManual: /buy FeMbDoX...pump 200 0.00471');
+      return;
+    }
+    if (parts[3] && (!Number.isFinite(manualPrice) || manualPrice <= 0)) {
+      await bot.sendMessage(message.chat.id, '❌ Harga manual tidak valid. Contoh: /buy <address> 200 0.00471');
       return;
     }
 
     try {
-      await bot.sendMessage(message.chat.id, '⏳ Mengambil harga current dari DexScreener...');
-      const pair = await getTokenData(tokenAddress).catch(() => null);
-      const entryPrice = Number(pair?.price_usd ?? pair?.priceUsd);
-      if (!pair || !Number.isFinite(entryPrice) || entryPrice <= 0) {
-        await bot.sendMessage(message.chat.id, '❌ Gagal ambil harga. Token tidak ditemukan di DexScreener.');
-        return;
+      let pair = null;
+      let entryPrice = manualPrice;
+      let priceSource = 'manual';
+
+      if (!manualPrice) {
+        priceSource = 'auto-fetch';
+        await bot.sendMessage(message.chat.id, '⏳ Mengambil harga current dari DexScreener...');
+        pair = await getTokenData(tokenAddress).catch(() => null);
+        entryPrice = Number(pair?.price_usd ?? pair?.priceUsd);
+        if (!pair || !Number.isFinite(entryPrice) || entryPrice <= 0) {
+          await bot.sendMessage(message.chat.id, '❌ Gagal ambil harga. Token tidak ditemukan di DexScreener.');
+          return;
+        }
       }
 
       const result = await buyToken(tokenAddress, entryPrice, takeProfitPercent);
-      await bot.sendMessage(message.chat.id, formatBuyConfirmation({ ...result, symbol: result.symbol || pair.symbol }));
+      await bot.sendMessage(message.chat.id, formatBuyConfirmation({ ...result, symbol: result.symbol || pair?.symbol, priceSource }));
     } catch (error) {
       if (error.message === 'MAX_ACTIVE_POSITIONS') {
         await bot.sendMessage(message.chat.id, '❌ Maksimal 5 posisi aktif. Gunakan /sell untuk menutup posisi dulu.');
