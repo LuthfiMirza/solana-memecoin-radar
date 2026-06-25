@@ -11,8 +11,15 @@ function normalizeRisk(data) {
 async function checkToken(tokenAddress) {
   try {
     const { data } = await axios.get(`https://api.rugcheck.xyz/v1/tokens/${tokenAddress}/report`, { timeout: 20000 });
-    return normalizeRisk(data || {});
+    const result = normalizeRisk(data || {});
+    if (process.env.NODE_ENV === 'debug') {
+      console.log('RugCheck debug:', { tokenAddress, status: result.status, score: result.score, risks: data?.risks?.length || 0 });
+    }
+    return result;
   } catch (error) {
+    if (process.env.NODE_ENV === 'debug') {
+      console.log('RugCheck debug:', { tokenAddress, status: 'UNKNOWN', score: null, error: error.message });
+    }
     return { status: 'UNKNOWN', score: null, raw: { error: error.message } };
   }
 }

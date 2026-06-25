@@ -77,20 +77,44 @@ function scoreToken(input) {
   const whaleEntryCount = number(input.whaleEntryCount);
   const rugStatus = input.rugStatus || 'UNKNOWN';
 
+  const liquidityScore = liquidityPoints(liquidityUsd);
+  const volumeScore = volumePoints(volumeUsd);
+  const mcapScore = marketCapPoints(marketCapUsd);
+  const holderScore = holderPoints(topHolderPercent);
+  const ratioScore = buySellPoints(buySellRatio);
+  const smartScore = smartWalletPoints(smartWalletCount);
+  const whaleScore = whaleEntryPoints(whaleEntryCount);
+  const rugScore = rugcheckPoints(rugStatus);
+
   const breakdown = {
-    liquidity: liquidityPoints(liquidityUsd),
-    volume: volumePoints(volumeUsd),
-    marketCap: marketCapPoints(marketCapUsd),
-    topHolder: holderPoints(topHolderPercent),
-    buySellRatio: buySellPoints(buySellRatio),
-    smartWallet: smartWalletPoints(smartWalletCount),
-    whaleEntry: whaleEntryPoints(whaleEntryCount),
-    rugcheck: rugcheckPoints(rugStatus)
+    liquidity: liquidityScore,
+    volume: volumeScore,
+    marketCap: mcapScore,
+    topHolder: holderScore,
+    buySellRatio: ratioScore,
+    smartWallet: smartScore,
+    whaleEntry: whaleScore,
+    rugcheck: rugScore
   };
 
   const rawScore = Object.values(breakdown).reduce((sum, points) => sum + points, 0);
   const score = Math.max(0, Math.min(100, rawScore));
   const signal = getSignal(score);
+  if (process.env.NODE_ENV === 'debug') {
+    console.log('Scoring breakdown:', {
+      liquidity: liquidityScore,
+      volume: volumeScore,
+      marketCap: mcapScore,
+      topHolder: holderScore,
+      buySellRatio: ratioScore,
+      smartWallet: smartScore,
+      whaleEntry: whaleScore,
+      rugcheck: rugScore,
+      rawTotal: rawScore,
+      total: score,
+      signal
+    });
+  }
   return { score, signal, breakdown };
 }
 

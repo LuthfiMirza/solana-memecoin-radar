@@ -1,7 +1,7 @@
 require('dotenv').config();
 const cron = require('node-cron');
 const { query, pool } = require('./config/db');
-const { discoverNewTokens } = require('./services/discovery');
+const { discoverNewTokens, isBlacklisted } = require('./services/discovery');
 const { getTokenData } = require('./services/pairLookup');
 const { getTopHolderPercent } = require('./services/holderAnalyzer');
 const { checkToken } = require('./services/rugcheck');
@@ -56,8 +56,20 @@ async function saveSignal(tokenId, token, message) {
 }
 
 async function analyzeToken(tokenAddress) {
+  if (isBlacklisted(tokenAddress)) {
+    if (process.env.NODE_ENV === 'debug') {
+      console.log('Analyze skipped:', { tokenAddress, reason: 'BLACKLISTED' });
+    }
+    return null;
+  }
+
   const pair = await getTokenData(tokenAddress);
-  if (!pair) return null;
+  if (!pair) {
+    if (process.env.NODE_ENV === 'debug') {
+      console.log('Analyze skipped:', { tokenAddress, reason: 'NO_DEXSCREENER_PAIR' });
+    }
+    return null;
+  }
 
   const [holder, rug, walletStats] = await Promise.all([
     getTopHolderPercent(tokenAddress),
@@ -90,7 +102,50 @@ async function analyzeToken(tokenAddress) {
   const ai = await generateSummary(token);
   token.aiProvider = ai.provider;
   token.aiSummary = ai.summary;
+  if (process.env.NODE_ENV === 'debug') {
+    console.log('Analyze result:', {
+      tokenAddress,
+      symbol: token.symbol,
+      score: token.score,
+      signal: token.signal,
+      aiProvider: token.aiProvider
+    });
+  }
   return token;
+}
+
+async function testToken(tokenAddress) {
+  if (!tokenAddress) {
+    throw new Error('Format: node scanner.js --test <token_address>');
+  }
+
+  console.log(`[${new Date().toISOString()}] Test pipeline token: ${tokenAddress}`);
+  const token = await analyzeToken(tokenAddress);
+  if (!token) {
+    console.log('Test result: token dilewati atau data pair tidak tersedia.');
+    return;
+  }
+
+  console.log('Test summary:', {
+    tokenAddress: token.tokenAddress,
+    symbol: token.symbol,
+    name: token.name,
+    priceUsd: token.priceUsd,
+    liquidityUsd: token.liquidityUsd,
+    volume24hUsd: token.volume24hUsd,
+    marketCapUsd: token.marketCapUsd,
+    topHolderPercent: token.topHolderPercent,
+    buySellRatio: token.buySellRatio,
+    smartWalletCount: token.smartWalletCount,
+    whaleEntryCount: token.whaleEntryCount,
+    rugStatus: token.rugStatus,
+    rugScore: token.rugScore,
+    score: token.score,
+    signal: token.signal,
+    breakdown: token.breakdown,
+    aiProvider: token.aiProvider,
+    aiSummaryAvailable: Boolean(token.aiSummary)
+  });
 }
 
 async function scanNewTokens() {
@@ -147,8 +202,13 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-main().catch(async (error) => {
+const testIndex = process.argv.indexOf('--test');
+const runner = testIndex >= 0 ? testToken(process.argv[testIndex + 1]) : main();
+
+runner.catch(async (error) => {
   console.error(`Fatal: ${error.message}`);
   await pool.end();
   process.exit(1);
+}).finally(async () => {
+  if (testIndex >= 0) await pool.end();
 });

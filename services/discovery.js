@@ -2,6 +2,19 @@ const axios = require('axios');
 
 const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const TOKEN_2022_PROGRAM_ID = 'TokenzQdBNbLqP5VE5keVcGQkBzY8S2M9sG7sHPeuZ';
+const BLACKLIST = new Set([
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  'So11111111111111111111111111111111111111112',
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+  'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So',
+  'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
+  '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',
+  'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1'
+]);
+
+function isBlacklisted(tokenAddress) {
+  return BLACKLIST.has(tokenAddress);
+}
 
 function heliusUrl() {
   if (!process.env.HELIUS_API_KEY) return null;
@@ -66,7 +79,19 @@ async function discoverNewTokens(options = {}) {
     }
   }
 
-  return unique(tokens.map((token) => token.tokenAddress)).map((tokenAddress) => ({ tokenAddress }));
+  const discovered = unique(tokens.map((token) => token.tokenAddress));
+  const filtered = discovered.filter((tokenAddress) => !isBlacklisted(tokenAddress));
+
+  if (process.env.NODE_ENV === 'debug') {
+    console.log('Discovery debug:', {
+      signatures: signatures.length,
+      discovered: discovered.length,
+      blacklisted: discovered.length - filtered.length,
+      candidates: filtered.length
+    });
+  }
+
+  return filtered.map((tokenAddress) => ({ tokenAddress }));
 }
 
-module.exports = { discoverNewTokens };
+module.exports = { discoverNewTokens, isBlacklisted, BLACKLIST };

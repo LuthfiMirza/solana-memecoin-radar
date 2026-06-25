@@ -26,6 +26,34 @@ function signalEmoji(signal) {
   return '❌';
 }
 
+function shortAddress(address) {
+  if (!address || address.length <= 12) return address || 'n/a';
+  return `${address.slice(0, 4)}...${address.slice(-4)}`;
+}
+
+function scoreBar(score) {
+  const normalized = Math.max(0, Math.min(100, Number(score) || 0));
+  const filled = Math.round(normalized / 10);
+  return `${'█'.repeat(filled)}${'░'.repeat(10 - filled)} ${normalized}/100`;
+}
+
+function rugEmoji(status) {
+  if (status === 'SAFE') return '✅ SAFE';
+  if (status === 'RISK') return '⚠️ RISK';
+  return '❔ UNKNOWN';
+}
+
+function wibTimestamp(date = new Date()) {
+  return `${date.toLocaleString('id-ID', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Asia/Jakarta'
+  })} WIB`;
+}
+
 async function sendMessage(message) {
   if (!enabled()) {
     console.log(`[TELEGRAM OFF]\n${message}`);
@@ -36,19 +64,31 @@ async function sendMessage(message) {
 }
 
 function formatSignalAlert(token) {
+  const dexUrl = token.url || `https://dexscreener.com/solana/${token.tokenAddress}`;
+  const rugUrl = `https://rugcheck.xyz/tokens/${token.tokenAddress}`;
+  const breakdown = token.breakdown || {};
+
   return [
-    `${signalEmoji(token.signal)} Sinyal ${token.signal}: ${token.symbol || 'UNKNOWN'}`,
-    `Alamat: ${token.tokenAddress}`,
-    `Skor: ${token.score}/100`,
-    `Harga: ${money(token.priceUsd)}`,
-    `Likuiditas: ${money(token.liquidityUsd)}`,
-    `Volume 24j: ${money(token.volume24hUsd)}`,
-    `Market Cap: ${money(token.marketCapUsd)}`,
-    `Top Holder: ${token.topHolderPercent ?? 'n/a'}%`,
-    `Buy/Sell Ratio: ${Number(token.buySellRatio || 0).toFixed(2)}`,
-    `RugCheck: ${token.rugStatus}`,
+    `${signalEmoji(token.signal)} ${token.signal} SIGNAL — $${token.symbol || 'UNKNOWN'}`,
+    `${token.name || 'Unknown Token'} | CA: ${shortAddress(token.tokenAddress)}`,
     '',
-    token.aiSummary || 'Ringkasan AI belum tersedia.',
+    `📊 Score: ${scoreBar(token.score)}`,
+    `🏦 Liquidity: ${money(token.liquidityUsd)} (${breakdown.liquidity ?? 0} pts)`,
+    `📈 Volume 24h: ${money(token.volume24hUsd)} (${breakdown.volume ?? 0} pts)`,
+    `💰 Market Cap: ${money(token.marketCapUsd)} (${breakdown.marketCap ?? 0} pts)`,
+    `👥 Top Holder: ${token.topHolderPercent ?? 'n/a'}% (${breakdown.topHolder ?? 0} pts)`,
+    `⚖️ Buy/Sell: ${Number(token.buySellRatio || 0).toFixed(2)}x (${breakdown.buySellRatio ?? 0} pts)`,
+    `🧠 Smart Wallets: ${token.smartWalletCount ?? 0} (${breakdown.smartWallet ?? 0} pts)`,
+    `🐋 Whale Entry: ${token.whaleEntryCount ?? 0} (${breakdown.whaleEntry ?? 0} pts)`,
+    `🛡️ RugCheck: ${rugEmoji(token.rugStatus)} (${breakdown.rugcheck ?? 0} pts)`,
+    '',
+    `🤖 AI: ${token.aiSummary || 'Ringkasan AI belum tersedia.'}`,
+    '',
+    `🔗 DexScreener: ${dexUrl}`,
+    `🔗 RugCheck: ${rugUrl}`,
+    '',
+    `⏰ ${wibTimestamp()}`,
+    `📍 CA: ${shortAddress(token.tokenAddress)}`,
     '',
     `Konfirmasi entry: /buy ${token.tokenAddress} <entry_price> <tp_percent>`
   ].join('\n');

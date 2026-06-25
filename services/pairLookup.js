@@ -29,10 +29,28 @@ function mapPair(pair) {
 async function getTokenData(tokenAddress) {
   const { data } = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { timeout: 20000 });
   const pairs = (data.pairs || []).filter((pair) => pair.chainId === 'solana');
-  if (pairs.length === 0) return null;
+  if (pairs.length === 0) {
+    if (process.env.NODE_ENV === 'debug') {
+      console.log('DexScreener debug:', { tokenAddress, pairs: 0, selected: null });
+    }
+    return null;
+  }
 
   pairs.sort((a, b) => num(b.liquidity?.usd) - num(a.liquidity?.usd));
-  return mapPair(pairs[0]);
+  const selected = mapPair(pairs[0]);
+  if (process.env.NODE_ENV === 'debug') {
+    console.log('DexScreener debug:', {
+      tokenAddress,
+      pairs: pairs.length,
+      symbol: selected.symbol,
+      priceUsd: selected.priceUsd,
+      liquidityUsd: selected.liquidityUsd,
+      volume24hUsd: selected.volume24hUsd,
+      marketCapUsd: selected.marketCapUsd,
+      buySellRatio: selected.buySellRatio
+    });
+  }
+  return selected;
 }
 
 module.exports = { getTokenData };
