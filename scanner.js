@@ -7,8 +7,9 @@ const { getTopHolderPercent } = require('./services/holderAnalyzer');
 const { checkToken } = require('./services/rugcheck');
 const { scoreToken } = require('./services/scoring');
 const { generateSummary } = require('./services/aiService');
+const { detectWhaleEntries } = require('./services/whale');
 const { monitorHoldings } = require('./services/portfolio');
-const { initBot, sendSignalAlert, sendSellAlert } = require('./services/telegram');
+const { initBot, sendSignalAlert, sendDailySummary } = require('./services/telegram');
 
 async function getSmartWalletStats() {
   const rows = await query('SELECT COUNT(*) AS total FROM smart_wallets WHERE is_active = 1');
@@ -77,26 +78,32 @@ async function analyzeToken(tokenAddress) {
     getSmartWalletStats(tokenAddress)
   ]);
 
-  const scoringInput = {
+  let scoringInput = {
     ...pair,
     topHolderPercent: holder.topHolderPercent,
     smartWalletCount: walletStats.smartWalletCount,
-    whaleEntryCount: walletStats.whaleEntryCount,
+    whaleEntryCount: 0,
     rugStatus: rug.status
   };
-  const scoring = scoreToken(scoringInput);
+  let scoring = scoreToken(scoringInput);
+  let whale = { whaleCount: 0, note: 'Skipped score < 40' };
+  if (scoring.score >= 40) {
+    whale = await detectWhaleEntries(tokenAddress, pair.priceUsd);
+    scoringInput = { ...scoringInput, whaleEntryCount: whale.whaleCount };
+    scoring = scoreToken(scoringInput);
+  }
   const token = {
     ...pair,
     tokenAddress,
     topHolderPercent: holder.topHolderPercent,
     smartWalletCount: walletStats.smartWalletCount,
-    whaleEntryCount: walletStats.whaleEntryCount,
+    whaleEntryCount: whale.whaleCount,
     rugStatus: rug.status,
     rugScore: rug.score,
     score: scoring.score,
     signal: scoring.signal,
     breakdown: scoring.breakdown,
-    raw: { pair: pair.raw, holder, rug }
+    raw: { pair: pair.raw, holder, rug, whale }
   };
 
   const ai = await generateSummary(token);
@@ -176,10 +183,7 @@ async function scanNewTokens() {
 
 async function monitorPortfolio() {
   console.log(`[${new Date().toISOString()}] Monitor portfolio aktif...`);
-  const alerts = await monitorHoldings();
-  for (const alert of alerts) {
-    await sendSellAlert(alert);
-  }
+  await monitorHoldings();
 }
 
 async function main() {
@@ -190,6 +194,7 @@ async function main() {
 
   cron.schedule('*/5 * * * *', () => scanNewTokens().catch((error) => console.error(`Scan error: ${error.message}`)));
   cron.schedule('*/2 * * * *', () => monitorPortfolio().catch((error) => console.error(`Portfolio error: ${error.message}`)));
+  cron.schedule('0 1 * * *', () => sendDailySummary().catch((error) => console.error(`Daily summary error: ${error.message}`)));
 
   if (process.env.RUN_ON_START !== 'false') {
     await scanNewTokens().catch((error) => console.error(`Initial scan error: ${error.message}`));

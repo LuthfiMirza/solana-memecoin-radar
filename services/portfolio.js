@@ -1,5 +1,6 @@
 const { query, transaction } = require('../config/db');
 const { getTokenData } = require('./pairLookup');
+const events = require('./events');
 
 const MAX_ACTIVE_HOLDINGS = 5;
 const STOP_LOSS_PERCENT = -20;
@@ -90,9 +91,9 @@ async function monitorHoldings() {
     const athDropPercent = percentChange(currentPrice, athPrice);
 
     let trigger = null;
-    if (currentPrice >= Number(holding.take_profit_price)) trigger = 'TAKE_PROFIT';
-    if (pnlPercent <= STOP_LOSS_PERCENT) trigger = 'STOP_LOSS';
-    if (athDropPercent <= ATH_DROP_PERCENT) trigger = 'ATH_DROP';
+    if (currentPrice >= Number(holding.take_profit_price)) trigger = 'TP';
+    if (currentPrice <= Number(holding.stop_loss_price) || pnlPercent <= STOP_LOSS_PERCENT) trigger = 'SL';
+    if (currentPrice <= athPrice * 0.7 || athDropPercent <= ATH_DROP_PERCENT) trigger = 'ATH_DROP';
 
     await query(
       'UPDATE portfolio SET current_price = ?, ath_price = ?, pnl_percent = ? WHERE id = ?',
@@ -101,10 +102,12 @@ async function monitorHoldings() {
 
     if (trigger) {
       await query(
-        `UPDATE portfolio SET \`status\` = 'CLOSED', close_price = ?, close_reason = ?, closed_at = NOW() WHERE id = ? AND \`status\` = 'ACTIVE'`,
-        [currentPrice, trigger, holding.id]
+        `UPDATE portfolio SET \`status\` = 'CLOSED', close_price = ?, close_reason = ?, closed_at = NOW(), pnl_percent = ? WHERE id = ? AND \`status\` = 'ACTIVE'`,
+        [currentPrice, trigger, pnlPercent, holding.id]
       );
-      alerts.push({ ...holding, symbol: pair.symbol || holding.symbol, currentPrice, pnlPercent, athPrice, athDropPercent, trigger });
+      const alert = { ...holding, symbol: pair.symbol || holding.symbol, currentPrice, pnlPercent, athPrice, athDropPercent, trigger };
+      alerts.push(alert);
+      events.emit('sell_triggered', { position: alert, reason: trigger, currentPrice });
     }
   }
 

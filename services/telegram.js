@@ -2,9 +2,16 @@ const TelegramBot = require('node-telegram-bot-api');
 const { query } = require('../config/db');
 const { buyToken, sellToken, portfolioSummary } = require('./portfolio');
 const { getTokenData } = require('./pairLookup');
+const { getTopHolderPercent } = require('./holderAnalyzer');
+const { checkToken } = require('./rugcheck');
+const { scoreToken } = require('./scoring');
+const { generateSummary } = require('./aiService');
+const { detectWhaleEntries } = require('./whale');
+const events = require('./events');
 
 let bot = null;
 let shutdownHandlersRegistered = false;
+let eventHandlersRegistered = false;
 
 function enabled() {
   return Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID);
@@ -104,6 +111,10 @@ function dexScreenerUrl(tokenAddress) {
   return `https://dexscreener.com/solana/${tokenAddress}`;
 }
 
+function isSolanaAddress(value) {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value || '');
+}
+
 function formatBuyConfirmation(result) {
   const priceSource = result.priceSource || 'auto-fetch';
   return [
@@ -132,7 +143,7 @@ function formatSignalAlert(token) {
   const tokenAddress = token.tokenAddress || token.token_address;
   const pairAddress = token.pairAddress || token.pair_address || tokenAddress;
   const dexUrl = token.url || `https://dexscreener.com/solana/${pairAddress}`;
-  const rugUrl = `https://rugcheck.xyz/tokens/${token.tokenAddress}`;
+  const rugUrl = `https://rugcheck.xyz/tokens/${tokenAddress}`;
   const aiSummary = cleanAI(token.aiSummary || token.ai_summary);
   const topHolder = token.topHolderPercent ?? token.top_holder_percent;
   const topHolderDisplay = topHolder !== null && topHolder !== undefined && Number.isFinite(Number(topHolder))
@@ -191,6 +202,92 @@ function formatSellAlert(alert) {
     `ATH sejak entry: ${money(alert.athPrice)}`,
     `Drop dari ATH: ${pct(alert.athDropPercent)}`
   ].join('\n');
+}
+
+function formatAutoSellAlert(position, reason, currentPrice) {
+  const reasonConfig = {
+    TP: { title: '🎯 TAKE PROFIT HIT', label: 'TP' },
+    SL: { title: '🛑 STOP LOSS HIT', label: 'SL' },
+    ATH_DROP: { title: '📉 ATH DROP ALERT', label: 'ATH_DROP' }
+  }[reason] || { title: '🔔 SELL ALERT', label: reason };
+  const entryPrice = Number(position.entry_price || 0);
+  const exitPrice = Number(currentPrice || position.currentPrice || position.close_price || 0);
+  const pnlPercent = entryPrice > 0 ? ((exitPrice - entryPrice) / entryPrice) * 100 : Number(position.pnlPercent || position.pnl_percent || 0);
+  const pnlIcon = pnlPercent >= 0 ? '🟢' : '🔴';
+  const tokenAddress = position.token_address || position.tokenAddress;
+
+  return [
+    `${reasonConfig.title} — $${position.symbol || 'UNKNOWN'}`,
+    '━━━━━━━━━━━━━━━━━━━━━━━━',
+    `📍 CA      : ${shortAddress(tokenAddress)}`,
+    `💰 Entry   : ${formatUSD(entryPrice)}`,
+    `📈 Exit    : ${formatUSD(exitPrice)}`,
+    `📊 P&L     : ${pct(pnlPercent)} ${pnlIcon}`,
+    `⏱️ Hold    : ${formatHoldingDuration(position.opened_at)}`,
+    '',
+    `🔗 Chart: ${dexScreenerUrl(tokenAddress)}`,
+    `⏰ ${wibTimestamp()}`,
+    '',
+    '💡 Posisi otomatis ditutup. Gunakan /portfolio untuk cek sisa posisi.'
+  ].join('\n');
+}
+
+async function getSmartWalletStats() {
+  const rows = await query('SELECT COUNT(*) AS total FROM smart_wallets WHERE is_active = 1');
+  return { smartWalletCount: rows[0]?.total || 0 };
+}
+
+async function analyzeTokenForTelegram(tokenAddress) {
+  const pair = await getTokenData(tokenAddress);
+  if (!pair) return null;
+
+  const [holder, rug, walletStats] = await Promise.all([
+    getTopHolderPercent(tokenAddress),
+    checkToken(tokenAddress),
+    getSmartWalletStats()
+  ]);
+
+  let scoringInput = {
+    ...pair,
+    topHolderPercent: holder.topHolderPercent,
+    smartWalletCount: walletStats.smartWalletCount,
+    whaleEntryCount: 0,
+    rugStatus: rug.status
+  };
+  let scoring = scoreToken(scoringInput);
+  let whale = { whaleCount: 0, note: 'Skipped score < 40' };
+
+  if (scoring.score >= 40) {
+    whale = await detectWhaleEntries(tokenAddress, pair.priceUsd);
+    scoringInput = { ...scoringInput, whaleEntryCount: whale.whaleCount };
+    scoring = scoreToken(scoringInput);
+  }
+
+  const token = {
+    ...pair,
+    tokenAddress,
+    topHolderPercent: holder.topHolderPercent,
+    smartWalletCount: walletStats.smartWalletCount,
+    whaleEntryCount: whale.whaleCount,
+    rugStatus: rug.status,
+    rugScore: rug.score,
+    score: scoring.score,
+    signal: scoring.signal,
+    breakdown: scoring.breakdown,
+    raw: { pair: pair.raw, holder, rug, whale }
+  };
+  const ai = await generateSummary(token);
+  token.aiProvider = ai.provider;
+  token.aiSummary = ai.summary;
+  return token;
+}
+
+function formatManualScanResult(token) {
+  const lines = formatSignalAlert(token).split('\n');
+  lines[0] = '🔍 MANUAL SCAN RESULT';
+  const base = lines.join('\n');
+  if (token.score >= 40) return base;
+  return `${base}\n\n❌ Tidak disarankan untuk entry.`;
 }
 
 function formatPortfolioCard(holding) {
@@ -263,12 +360,21 @@ async function registerBotCommands() {
       { command: 'portfolio', description: '📊 Lihat posisi aktif & P&L' },
       { command: 'buy', description: '🟢 Buka posisi baru' },
       { command: 'sell', description: '🔴 Tutup posisi' },
+      { command: 'scan', description: '🔍 Analisis token manual by address' },
       { command: 'status', description: '🔧 Status bot & sistem' },
       { command: 'config', description: '⚙️ Lihat konfigurasi aktif' }
     ]);
   } catch (error) {
     console.warn(`Gagal register Telegram command menu: ${error.message}`);
   }
+}
+
+function registerEventHandlers() {
+  if (eventHandlersRegistered) return;
+  events.on('sell_triggered', ({ position, reason, currentPrice }) => {
+    sendSellAlert(position, reason, currentPrice).catch((error) => console.warn(`Gagal kirim sell alert: ${error.message}`));
+  });
+  eventHandlersRegistered = true;
 }
 
 async function sendPortfolioCards(chatId) {
@@ -307,6 +413,9 @@ function formatHelpMessage() {
     '',
     '🔴 */sell* <address>',
     '   Tutup posisi & catat hasil',
+    '',
+    '🔍 */scan* <address>',
+    '   Analisis token manual by address',
     '',
     '🔧 */status*',
     '   Cek bot hidup, DB, API connections',
@@ -395,8 +504,12 @@ async function sendSignalAlert(token) {
   await sendMessage(formatSignalAlert(token));
 }
 
-async function sendSellAlert(alert) {
-  await sendMessage(formatSellAlert(alert));
+async function sendSellAlert(position, reason, currentPrice) {
+  if (reason) {
+    await sendMessage(formatAutoSellAlert(position, reason, currentPrice));
+    return;
+  }
+  await sendMessage(formatSellAlert(position));
 }
 
 async function getStatusMessage() {
@@ -423,6 +536,58 @@ async function getStatusMessage() {
   ].join('\n');
 }
 
+function summaryDateWib(date = new Date()) {
+  return date.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Jakarta' });
+}
+
+function closeReasonLabel(reason) {
+  return { TP: 'TP', SL: 'SL', ATH_DROP: 'ATH Drop', MANUAL: 'Manual' }[reason] || reason || 'Unknown';
+}
+
+async function sendDailySummary() {
+  const [signalRows, closedRows, activeRows] = await Promise.all([
+    query(`SELECT \`signal\`, COUNT(*) AS total FROM signals WHERE sent_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR) GROUP BY \`signal\``),
+    query(`SELECT symbol, pnl_percent, close_reason FROM portfolio WHERE \`status\` = 'CLOSED' AND closed_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR) ORDER BY closed_at DESC`),
+    query(`SELECT symbol, pnl_percent, take_profit_percent FROM portfolio WHERE \`status\` = 'ACTIVE' ORDER BY opened_at ASC`)
+  ]);
+
+  const signalCounts = signalRows.reduce((acc, row) => ({ ...acc, [row.signal]: row.total }), {});
+  const closedCount = closedRows.length;
+  const wins = closedRows.filter((row) => Number(row.pnl_percent || 0) > 0).length;
+  const winRate = closedCount > 0 ? Math.round((wins / closedCount) * 100) : 0;
+  const closedLines = closedRows.length > 0
+    ? closedRows.map((row) => `${Number(row.pnl_percent || 0) >= 0 ? '🟢' : '🔴'} $${row.symbol || 'UNKNOWN'} ${pct(row.pnl_percent)} (${closeReasonLabel(row.close_reason)})`)
+    : ['📭 Tidak ada posisi ditutup.'];
+  const activeLines = activeRows.length > 0
+    ? activeRows.map((row) => `- $${row.symbol || 'UNKNOWN'} | ${pct(row.pnl_percent)} | TP target ${pct(row.take_profit_percent)}`)
+    : ['- Tidak ada posisi aktif.'];
+
+  const lines = [
+    `📅 DAILY SUMMARY — ${summaryDateWib()}`,
+    '━━━━━━━━━━━━━━━━━━━━━━━━',
+    '',
+    '📡 Signal Kemarin:',
+    `🚀 BUY  : ${signalCounts.BUY || 0} signal`,
+    `👀 WATCH: ${signalCounts.WATCH || 0} signal`,
+    '',
+    '💼 Posisi Ditutup:',
+    ...closedLines,
+    '',
+    `📊 Win Rate Kemarin: ${winRate}% (${wins}/${closedCount})`,
+    '',
+    '💼 Posisi Aktif Sekarang:',
+    ...activeLines,
+    '',
+    '⏰ Scan berjalan normal. Next summary: besok 08.00 WIB.'
+  ];
+
+  if ((signalCounts.BUY || 0) === 0 && (signalCounts.WATCH || 0) === 0) {
+    lines.splice(6, 0, '📭 Tidak ada signal kemarin. Scanner tetap aktif.');
+  }
+
+  await sendMessage(lines.join('\n'));
+}
+
 function initBot(polling = true) {
   if (!enabled()) {
     console.log('Telegram belum aktif. Isi TELEGRAM_BOT_TOKEN dan TELEGRAM_CHAT_ID di .env.');
@@ -435,6 +600,7 @@ function initBot(polling = true) {
     request: { timeout: 30000 }
   });
   registerBotCommands();
+  registerEventHandlers();
 
   if (polling) {
     bot.startPolling({
@@ -510,6 +676,32 @@ function initBot(polling = true) {
     }
   });
 
+  bot.onText(/^\/scan(?:\s+(\S+))?$/, async (message, match) => {
+    if (String(message.chat.id) !== String(process.env.TELEGRAM_CHAT_ID)) return;
+    const tokenAddress = match[1];
+    if (!isSolanaAddress(tokenAddress)) {
+      await bot.sendMessage(message.chat.id, '❌ Format salah. Gunakan: /scan <token_address>');
+      return;
+    }
+
+    await bot.sendMessage(message.chat.id, '⏳ Menganalisis token... Mohon tunggu 10-15 detik.');
+    try {
+      const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('SCAN_TIMEOUT')), 30000));
+      const token = await Promise.race([analyzeTokenForTelegram(tokenAddress), timeout]);
+      if (!token) {
+        await bot.sendMessage(message.chat.id, '❌ Token tidak ditemukan di DexScreener. Pastikan token sudah listed.');
+        return;
+      }
+      await bot.sendMessage(message.chat.id, formatManualScanResult(token), { disable_web_page_preview: true });
+    } catch (error) {
+      if (error.message === 'SCAN_TIMEOUT') {
+        await bot.sendMessage(message.chat.id, '⚠️ Analisis timeout. Coba lagi.');
+        return;
+      }
+      await bot.sendMessage(message.chat.id, `⚠️ Gagal scan token: ${error.message}`);
+    }
+  });
+
   bot.onText(/^\/help$/, async (message) => {
     if (String(message.chat.id) !== String(process.env.TELEGRAM_CHAT_ID)) return;
     await bot.sendMessage(message.chat.id, formatHelpMessage(), { parse_mode: 'Markdown' });
@@ -571,9 +763,13 @@ module.exports = {
   sendMessage,
   sendSignalAlert,
   sendSellAlert,
+  sendDailySummary,
   formatBuyConfirmation,
   formatSignalAlert,
   formatSellAlert,
+  formatAutoSellAlert,
+  formatManualScanResult,
+  analyzeTokenForTelegram,
   formatPortfolioCard,
   formatPortfolioSummary
 };
