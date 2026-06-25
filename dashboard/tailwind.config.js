@@ -1,0 +1,1 @@
+export default { content: ['./index.html', './src/**/*.{js,jsx}'], theme: { extend: { colors: { navy: '#0B1F3A', ocean: '#123B63', soft: '#EEF4FF' }, boxShadow: { card: '0 18px 45px rgba(15,23,42,.08)' } } }, plugins: [] };

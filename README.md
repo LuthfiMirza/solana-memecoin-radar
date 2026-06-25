@@ -99,3 +99,29 @@ Schema lives in `database/schema.sql` and uses MariaDB-compatible SQL for XAMPP.
 ## Disclaimer
 
 Educational use only. Not financial advice.
+
+## Dashboard
+
+KeyScanner coin includes a local Aether-inspired dashboard with a dark blue professional theme.
+
+Start the API:
+```bash
+npm run api
+```
+
+Start the React dashboard:
+```bash
+npm run dashboard:dev
+```
+
+Open:
+```text
+http://127.0.0.1:5173
+```
+
+Dashboard data flow:
+```text
+Bot Scanner → MySQL → Fastify API → React Dashboard
+```
+
+Phase 1 includes sidebar navigation, portfolio overview, market pulse, score history chart, risk index, P&L, and confidence score.
