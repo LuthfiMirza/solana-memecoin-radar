@@ -3,6 +3,7 @@ const { query } = require('../config/db');
 const { buyToken, sellToken, portfolioSummary } = require('./portfolio');
 
 let bot = null;
+let shutdownHandlersRegistered = false;
 
 function enabled() {
   return Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID);
@@ -12,6 +13,11 @@ function money(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 'n/a';
   return `$${number.toLocaleString('en-US', { maximumFractionDigits: 8 })}`;
+}
+
+function moneyOrDash(value) {
+  if (value === null || value === undefined) return '—';
+  return money(value);
 }
 
 function pct(value) {
@@ -52,6 +58,27 @@ function wibTimestamp(date = new Date()) {
     minute: '2-digit',
     timeZone: 'Asia/Jakarta'
   })} WIB`;
+}
+
+function htmlEscape(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function formatHoldingDuration(openedAt) {
+  const opened = new Date(openedAt).getTime();
+  if (!Number.isFinite(opened)) return '—';
+  const totalMinutes = Math.max(0, Math.floor((Date.now() - opened) / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours <= 0) return `${minutes}m`;
+  return `${hours}j ${minutes}m`;
+}
+
+function dexScreenerUrl(tokenAddress) {
+  return `https://dexscreener.com/solana/${tokenAddress}`;
 }
 
 async function sendMessage(message) {
@@ -111,6 +138,85 @@ function formatSellAlert(alert) {
     `ATH sejak entry: ${money(alert.athPrice)}`,
     `Drop dari ATH: ${pct(alert.athDropPercent)}`
   ].join('\n');
+}
+
+function formatPortfolioCard(holding) {
+  const pnlPercent = Number(holding.pnl_percent || 0);
+  const isProfit = pnlPercent >= 0;
+  const icon = isProfit ? '🟢' : '🔴';
+  const symbol = htmlEscape(holding.symbol || 'UNKNOWN');
+  const targetPercent = Number(holding.take_profit_percent || 0);
+
+  return [
+    `${icon} <b>$${symbol} — ${pct(pnlPercent)}</b>`,
+    '',
+    '━━━━━━━━━━━━━━━━━━━━',
+    '',
+    `💰 Entry  : ${money(holding.entry_price)}`,
+    '',
+    `📈 Current: ${moneyOrDash(holding.current_price)}`,
+    '',
+    `🎯 Target : ${money(holding.take_profit_price)} (${pct(targetPercent)})`,
+    '',
+    `🛑 Stop   : ${money(holding.stop_loss_price)} (-20%)`,
+    '',
+    `📊 ATH    : ${moneyOrDash(holding.ath_price)}`,
+    '',
+    `⏱️ Holding: ${formatHoldingDuration(holding.opened_at)}`,
+    '',
+    `📍 CA: ${shortAddress(holding.token_address)}`
+  ].join('\n');
+}
+
+function formatPortfolioSummary(holdings) {
+  const active = holdings.length;
+  const profitHoldings = holdings.filter((holding) => Number(holding.pnl_percent || 0) >= 0);
+  const sorted = [...holdings].sort((a, b) => Number(b.pnl_percent || 0) - Number(a.pnl_percent || 0));
+  const best = sorted[0];
+  const worst = sorted[sorted.length - 1];
+
+  return [
+    '📊 <b>PORTFOLIO SUMMARY</b>',
+    '',
+    '━━━━━━━━━━━━━━━━━━━━',
+    '',
+    `Active  : ${active}/5 positions`,
+    '',
+    `🟢 Profit: ${profitHoldings.length} position`,
+    '',
+    `🔴 Loss  : ${active - profitHoldings.length} position`,
+    '',
+    `Best    : ${best ? `${pct(best.pnl_percent)} $${htmlEscape(best.symbol || 'UNKNOWN')}` : '—'}`,
+    '',
+    `Worst   : ${worst ? `${pct(worst.pnl_percent)} $${htmlEscape(worst.symbol || 'UNKNOWN')}` : '—'}`
+  ].join('\n');
+}
+
+function portfolioButtons(tokenAddress) {
+  return {
+    inline_keyboard: [[
+      { text: '📊 DexScreener', url: dexScreenerUrl(tokenAddress) },
+      { text: '🔴 Sell Now', callback_data: `sell_confirm:${tokenAddress}` }
+    ]]
+  };
+}
+
+async function sendPortfolioCards(chatId) {
+  const holdings = await portfolioSummary();
+  if (holdings.length === 0) {
+    await bot.sendMessage(chatId, '📭 Tidak ada posisi aktif.\n\nGunakan /buy untuk mulai tracking.');
+    return;
+  }
+
+  for (const holding of holdings) {
+    await bot.sendMessage(chatId, formatPortfolioCard(holding), {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: portfolioButtons(holding.token_address)
+    });
+  }
+
+  await bot.sendMessage(chatId, formatPortfolioSummary(holdings), { parse_mode: 'HTML' });
 }
 
 function formatHelpMessage() {
@@ -258,7 +364,27 @@ function initBot(polling = true) {
   }
   if (bot) return bot;
 
-  bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling });
+  bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
+    polling: false,
+    request: { timeout: 30000 }
+  });
+
+  if (polling) {
+    bot.startPolling({
+      dropPendingUpdates: true,
+      allowedUpdates: ['message', 'callback_query'],
+      params: { allowed_updates: ['message', 'callback_query'] }
+    });
+  }
+
+  if (!shutdownHandlersRegistered) {
+    const stopPolling = async () => {
+      if (bot?.isPolling()) await bot.stopPolling();
+    };
+    process.once('SIGINT', stopPolling);
+    process.once('SIGTERM', stopPolling);
+    shutdownHandlersRegistered = true;
+  }
 
   bot.onText(/^\/buy\s+(\S+)\s+(\S+)\s+(\S+)/, async (message, match) => {
     if (String(message.chat.id) !== String(process.env.TELEGRAM_CHAT_ID)) return;
@@ -313,20 +439,28 @@ function initBot(polling = true) {
   bot.onText(/^\/portfolio/, async (message) => {
     if (String(message.chat.id) !== String(process.env.TELEGRAM_CHAT_ID)) return;
     try {
-      const holdings = await portfolioSummary();
-      if (holdings.length === 0) {
-        await bot.sendMessage(message.chat.id, 'Portfolio aktif kosong.');
-        return;
-      }
-      const lines = holdings.map((holding, index) => [
-        `${index + 1}. ${holding.symbol || 'UNKNOWN'}`,
-        `Alamat: ${holding.token_address}`,
-        `Entry: ${money(holding.entry_price)} | Sekarang: ${money(holding.current_price)}`,
-        `P&L: ${pct(holding.pnl_percent)} | TP: ${pct(holding.take_profit_percent)}`
-      ].join('\n'));
-      await bot.sendMessage(message.chat.id, `📊 Portfolio Aktif\n\n${lines.join('\n\n')}`);
+      await sendPortfolioCards(message.chat.id);
     } catch (error) {
       await bot.sendMessage(message.chat.id, `⚠️ Gagal membaca portfolio: ${error.message}`);
+    }
+  });
+
+  bot.on('callback_query', async (callbackQuery) => {
+    const chatId = callbackQuery.message?.chat?.id;
+    if (String(chatId) !== String(process.env.TELEGRAM_CHAT_ID)) return;
+
+    const data = callbackQuery.data || '';
+    if (!data.startsWith('sell_confirm:')) return;
+
+    const tokenAddress = data.replace('sell_confirm:', '');
+    try {
+      const holdings = await portfolioSummary();
+      const holding = holdings.find((item) => item.token_address === tokenAddress);
+      const symbol = holding?.symbol || 'UNKNOWN';
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Konfirmasi jual lewat command /sell.' });
+      await bot.sendMessage(chatId, `Yakin jual $${symbol}? Ketik /sell ${tokenAddress} untuk konfirmasi.`);
+    } catch (error) {
+      await bot.answerCallbackQuery(callbackQuery.id, { text: `Error: ${error.message}`, show_alert: true });
     }
   });
 
@@ -334,4 +468,13 @@ function initBot(polling = true) {
   return bot;
 }
 
-module.exports = { initBot, sendMessage, sendSignalAlert, sendSellAlert, formatSignalAlert, formatSellAlert };
+module.exports = {
+  initBot,
+  sendMessage,
+  sendSignalAlert,
+  sendSellAlert,
+  formatSignalAlert,
+  formatSellAlert,
+  formatPortfolioCard,
+  formatPortfolioSummary
+};

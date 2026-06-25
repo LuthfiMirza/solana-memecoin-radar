@@ -183,7 +183,8 @@ async function monitorPortfolio() {
 }
 
 async function main() {
-  initBot(true);
+  const telegramPolling = process.env.TELEGRAM_POLLING !== 'false' && process.env.NODE_ENV !== 'debug';
+  initBot(telegramPolling);
   await query('SELECT 1');
   console.log('Memecoin Scanner aktif. Cron scan: */5 menit, monitor portfolio: */2 menit.');
 
