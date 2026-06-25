@@ -1,0 +1,23 @@
+{
+  "name": "memecoin-scanner",
+  "version": "1.0.0",
+  "description": "Local Solana memecoin scanner with scoring, Telegram alerts, and portfolio tracking.",
+  "main": "scanner.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node scanner.js",
+    "db:import": "/Applications/XAMPP/xamppfiles/bin/mysql -h 127.0.0.1 -u root < database/schema.sql"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "groq-sdk": "^0.9.1",
+    "mysql2": "^3.11.5",
+    "node-cron": "^3.0.3",
+    "node-telegram-bot-api": "^0.66.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
