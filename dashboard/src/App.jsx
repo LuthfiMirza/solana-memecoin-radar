@@ -1,5 +1,6 @@
 import './main.css';
 import { useEffect, useState } from 'react';
+import { createRoot } from 'react-dom/client';
 import { Area, AreaChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { Activity, Bell, Bot, CircleHelp, Gauge, LayoutDashboard, LineChart as LineIcon, MessageSquare, Search, Settings, ShieldAlert, Sparkles, TrendingUp, Wallet, Zap } from 'lucide-react';
 import { fetchDashboard } from './lib/api';
@@ -41,3 +42,5 @@ export default function App() {
   useEffect(() => { let ok = true; async function load(){ try { const res = await fetchDashboard(); if(ok) setData(res); } catch(e){ console.warn(e.message); } } load(); const t=setInterval(load,15000); return()=>{ok=false; clearInterval(t)}; }, []);
   return <div className="min-h-screen bg-soft"><Sidebar /><main className="lg:pl-72"><div className="mx-auto max-w-[1500px] px-5 py-6 md:px-8"><Header /><div className="mb-6 rounded-3xl bg-navy p-5 text-white shadow-card md:hidden"><div className="text-xl font-extrabold">KeyScanner coin</div><div className="text-sm text-blue-100">Dark blue scanner dashboard</div></div><div className="grid gap-6 xl:grid-cols-[1fr_360px]"><div className="space-y-6"><PortfolioOverview data={data} /><ScoreHistory rows={data.scoreHistory} /><StatCards metrics={data.metrics} /></div><div className="space-y-6"><MarketPulse rows={data.marketPulse} /><SignalsPanel rows={data.signals} /></div></div></div></main></div>;
 }
+
+createRoot(document.getElementById('root')).render(<App />);
