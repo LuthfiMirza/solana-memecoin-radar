@@ -18,18 +18,18 @@ async function buyToken(tokenAddress, entryPrice, takeProfitPercent) {
   const entry = Number(entryPrice);
   const tpPercent = Number(takeProfitPercent);
   if (!tokenAddress || !Number.isFinite(entry) || entry <= 0 || !Number.isFinite(tpPercent) || tpPercent <= 0) {
-    throw new Error('Format salah. Gunakan: /buy <token_address> <entry_price> <tp_percent>');
+    throw new Error('Format salah. Gunakan: /buy <token_address> <tp_persen>');
   }
 
   return transaction(async (connection) => {
     const [activeRows] = await connection.execute('SELECT COUNT(*) AS total FROM portfolio WHERE \`status\` = ?', ['ACTIVE']);
     if (activeRows[0].total >= MAX_ACTIVE_HOLDINGS) {
-      throw new Error('Portfolio penuh. Maksimal 5 token aktif bersamaan.');
+      throw new Error('MAX_ACTIVE_POSITIONS');
     }
 
     const [existing] = await connection.execute('SELECT id FROM portfolio WHERE token_address = ? AND \`status\` = ?', [tokenAddress, 'ACTIVE']);
     if (existing.length > 0) {
-      throw new Error('Token ini sudah aktif di portfolio.');
+      throw new Error('TOKEN_ALREADY_ACTIVE');
     }
 
     const pair = await getTokenData(tokenAddress).catch(() => null);

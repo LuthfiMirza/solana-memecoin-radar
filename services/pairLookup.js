@@ -8,13 +8,15 @@ function num(value) {
 function mapPair(pair) {
   const buys = num(pair.txns?.h24?.buys);
   const sells = num(pair.txns?.h24?.sells);
+  const priceUsd = num(pair.priceUsd);
   return {
     tokenAddress: pair.baseToken?.address,
     symbol: pair.baseToken?.symbol || 'UNKNOWN',
     name: pair.baseToken?.name || 'Unknown Token',
     pairAddress: pair.pairAddress || null,
     dexId: pair.dexId || null,
-    priceUsd: num(pair.priceUsd),
+    priceUsd,
+    price_usd: priceUsd,
     liquidityUsd: num(pair.liquidity?.usd),
     volume24hUsd: num(pair.volume?.h24),
     marketCapUsd: num(pair.marketCap || pair.fdv),

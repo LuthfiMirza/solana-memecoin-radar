@@ -1,6 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { query } = require('../config/db');
 const { buyToken, sellToken, portfolioSummary } = require('./portfolio');
+const { getTokenData } = require('./pairLookup');
 
 let bot = null;
 let shutdownHandlersRegistered = false;
@@ -79,6 +80,20 @@ function formatHoldingDuration(openedAt) {
 
 function dexScreenerUrl(tokenAddress) {
   return `https://dexscreener.com/solana/${tokenAddress}`;
+}
+
+function formatBuyConfirmation(result) {
+  return [
+    '✅ Posisi dibuka!',
+    '━━━━━━━━━━━━━━━━━━━━',
+    `📍 Token  : $${result.symbol || 'UNKNOWN'} (${shortAddress(result.tokenAddress)})`,
+    `💰 Entry  : ${money(result.entryPrice)} (auto-fetch)`,
+    `🎯 Target : ${money(result.takeProfitPrice)} (${pct(result.takeProfitPercent)})`,
+    `🛑 Stop   : ${money(result.stopLossPrice)} (-20%)`,
+    `⏰ Waktu  : ${wibTimestamp()}`,
+    '',
+    'Gunakan /portfolio untuk monitor posisi.'
+  ].join('\n');
 }
 
 async function sendMessage(message) {
@@ -226,9 +241,9 @@ function formatHelpMessage() {
     '📊 */portfolio*',
     'Lihat semua posisi aktif + P&L',
     '',
-    '🚀 */buy* <contract> <price> <tp%>',
-    'Masuk posisi baru',
-    'Contoh: /buy EPjFWdd5... 1.00 50',
+    '🚀 */buy* <contract> <tp%>',
+    'Masuk posisi baru dengan entry price auto-fetch dari DexScreener',
+    'Contoh: /buy FeMbDoX...pump 200',
     '',
     '❌ */sell* <contract>',
     'Tutup posisi manual',
@@ -263,7 +278,7 @@ function formatStartMessage() {
     '',
     '🚀 *Quick Start:*',
     '1. Tunggu signal WATCH/BUY via Telegram',
-    '2. Confirm entry dengan: /buy <contract> <price> <50>',
+    '2. Confirm entry dengan: /buy <contract> <tp%>',
     '3. Monitor di: /portfolio',
     '4. Close posisi: /sell <contract>',
     '',
@@ -386,18 +401,37 @@ function initBot(polling = true) {
     shutdownHandlersRegistered = true;
   }
 
-  bot.onText(/^\/buy\s+(\S+)\s+(\S+)\s+(\S+)/, async (message, match) => {
+  bot.onText(/^\/buy(?:\s+.+)?$/, async (message) => {
     if (String(message.chat.id) !== String(process.env.TELEGRAM_CHAT_ID)) return;
+    const parts = message.text.trim().split(/\s+/);
+    const tokenAddress = parts[1];
+    const takeProfitPercent = Number(parts[2]);
+
+    if (!tokenAddress || !Number.isFinite(takeProfitPercent) || takeProfitPercent <= 0) {
+      await bot.sendMessage(message.chat.id, '❌ Format salah.\nGunakan: /buy <token_address> <tp_persen>\nContoh: /buy FeMbDoX...pump 200');
+      return;
+    }
+
     try {
-      const result = await buyToken(match[1], match[2], match[3]);
-      await bot.sendMessage(message.chat.id, [
-        `✅ Entry dikonfirmasi: ${result.symbol || 'UNKNOWN'}`,
-        `Alamat: ${result.tokenAddress}`,
-        `Entry: ${money(result.entryPrice)}`,
-        `Target TP: ${result.takeProfitPercent}% (${money(result.takeProfitPrice)})`,
-        `Stop loss: ${money(result.stopLossPrice)}`
-      ].join('\n'));
+      await bot.sendMessage(message.chat.id, '⏳ Mengambil harga current dari DexScreener...');
+      const pair = await getTokenData(tokenAddress).catch(() => null);
+      const entryPrice = Number(pair?.price_usd ?? pair?.priceUsd);
+      if (!pair || !Number.isFinite(entryPrice) || entryPrice <= 0) {
+        await bot.sendMessage(message.chat.id, '❌ Gagal ambil harga. Token tidak ditemukan di DexScreener.');
+        return;
+      }
+
+      const result = await buyToken(tokenAddress, entryPrice, takeProfitPercent);
+      await bot.sendMessage(message.chat.id, formatBuyConfirmation({ ...result, symbol: result.symbol || pair.symbol }));
     } catch (error) {
+      if (error.message === 'MAX_ACTIVE_POSITIONS') {
+        await bot.sendMessage(message.chat.id, '❌ Maksimal 5 posisi aktif. Gunakan /sell untuk menutup posisi dulu.');
+        return;
+      }
+      if (error.message === 'TOKEN_ALREADY_ACTIVE') {
+        await bot.sendMessage(message.chat.id, '⚠️ Token ini sudah ada di portfolio aktif kamu.');
+        return;
+      }
       await bot.sendMessage(message.chat.id, `⚠️ Gagal /buy: ${error.message}`);
     }
   });
@@ -473,6 +507,7 @@ module.exports = {
   sendMessage,
   sendSignalAlert,
   sendSellAlert,
+  formatBuyConfirmation,
   formatSignalAlert,
   formatSellAlert,
   formatPortfolioCard,
