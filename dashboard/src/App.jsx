@@ -1,5 +1,5 @@
 import './main.css';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Area, AreaChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { Activity, Bell, Bot, CircleHelp, Gauge, LayoutDashboard, LineChart as LineIcon, MessageSquare, Search, Settings, ShieldAlert, Sparkles, TrendingUp, Wallet, Zap } from 'lucide-react';
